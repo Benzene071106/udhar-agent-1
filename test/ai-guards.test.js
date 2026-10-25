@@ -88,7 +88,7 @@ test('KAN-72 / KAN-73: customer side: no opt-out, verify, abuse, amount or items
   assert.equal((await ci({ intent: 'payment_claim', amount: 5000 }, 'maine paise de diye')).amount, null);
   assert.equal((await ci({ intent: 'payment_claim', amount: 170, method: 'upi' }, '170 UPI kar diya')).amount, 170);
   const o = await ci({ intent: 'order', items: [{ name: 'Basmati chawal', qty: 25, unit: 'kg' }] }, 'namaste');
-  assert.notEqual(o.intent, 'order');
+  assert.ok(!o || o.intent !== 'order'); // null: a clear greeting by the rules wins over the model (KAN-160)
 });
 
 test('KAN-76: a translation that swaps two amounts is rejected', () => {

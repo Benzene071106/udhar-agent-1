@@ -56,6 +56,10 @@ function createBrain(opts: BrainOpts) {
       const r = await llm.chatJson(U.customerMessages(state, c, o.heard || text, ctx), { maxTokens: 500, validate: (j) => U.normalize(j, 'customer') });
       const ci: Understood<CustomerIntent> | null = U.toCustomerIntent(r.value, text);
       if (!ci) return null;
+      // a clear rules reading wins over a model that disagrees: "kitna baaki hai" is the hisaab, "200 cash de diya" a
+      // cash claim, whatever the model called it (KAN-160)
+      const rules = C.customerIntentRules(state, c, text);
+      if (['balance', 'pay_claim', 'greeting'].indexOf(rules.intent) >= 0 && ci.intent !== rules.intent) return null;
       ci.lang = U.replyLang(ci.lang, o.source);
       ci.provider = r.provider; ci.ms = r.ms; ci.u = r.value;
       return ci;

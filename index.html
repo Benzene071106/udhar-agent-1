@@ -3629,6 +3629,21 @@ function factory() {
     function phonKey(k) {
         return k.split(' ').map((w) => (w.length >= 4 ? w.replace(/(ey|y)$/, 'i').replace(/u/g, 'a') : w)).join(' ');
     }
+    /** The one live khata whose first name sounds like this one (consonants only, as speech-to-text bends vowels), or null. */
+    function soundsLike(state, key) {
+        const skel = (w) => w.replace(/[aeiouyhw]/g, '').replace(/(.)\1+/g, '$1');
+        const k = String(key || '').split(' ')[0] || '';
+        if (k.length < 5 || skel(k).length < 3)
+            return null;
+        const near = state.customers.filter((c) => {
+            if (c.removed)
+                return false;
+            const w = c.key.split(' ')[0] || '';
+            return w.length >= 4 && w[0] === k[0] && w !== k && lev(skel(w), skel(k)) <= (skel(k).length >= 4 ? 2 : 1) && lev(w, k) <= Math.ceil(k.length / 2);
+        }).map((c) => ({ c, d: lev(c.key.split(' ')[0], k) * 2 + lev(skel(c.key.split(' ')[0]), skel(k)) })).sort((a, b) => a.d - b.d);
+        // the closest one only, and only when it is clearly closer than the next ("Saarasath": Sarthak, not Sharma)
+        return near.length && (near.length === 1 || near[1].d > near[0].d) ? near[0].c : null;
+    }
     function findCustomers(state, key) {
         if (!key)
             return [];
@@ -5616,6 +5631,11 @@ function factory() {
             reply(intent.ask && /\?/.test(intent.ask) ? '🤔 ' + intent.ask : 'Kiska khata? Naam ke saath boliye, jaise "Sharma ji ne 340 ka saaman liya".');
             return out;
         }
+        // "सारसठ में ₹400 का उधार": the "में" a voice note hangs on the name is not part of it ("Saarasath Men")
+        if (/ (men|mein|me|mai|main|mei)$/.test(intent.nameKey) && intent.nameKey.split(' ').length > 1 && !intent.matches) {
+            intent.nameKey = intent.nameKey.replace(/ (men|mein|me|mai|main|mei)$/, '');
+            intent.name = String(intent.name || '').replace(/\s+\S+$/, '');
+        }
         let matches = intent.matches || findCustomers(state, intent.nameKey);
         delete intent.matches;
         // बंटी is Banti or Bunty: a name heard in Devanagari offers every khata that sounds the same, never one picked
@@ -5639,6 +5659,15 @@ function factory() {
             const word = intent.intent === 'credit' ? 'udhaar' : 'jama';
             const shorter = intent.nameKey.split(' ').every((w) => cust.key.split(' ').includes(w));
             reply('🤔 ' + (shorter ? '"' + intent.name + '" matlab ' + cust.name + '? Ya koi doosre ' + intent.name + ' hain? ' : '"' + intent.name + '" ka khata nahi mila. ') + cust.name + ' ka ' + rupees(intent.amount) + ' ' + word + ' likhna hai?\n*haan* = ' + cust.name + ' ke khate mein' +
+                (intent.intent === 'credit' ? '\n*naya* = "' + intent.name + '" ka naya khata' : '') + '\n*nahi* = kuch nahi\n(Abhi kuch nahi likha.)', { kind: 'confirm-ask' });
+            return out;
+        }
+        // a voice note mishears names ("Saarasath" for Sarthak): one khata that sounds close is offered, never written to
+        const near = !cust && heard && !intent.confirmed && ['credit', 'payment', 'settle'].indexOf(intent.intent) >= 0 ? soundsLike(state, intent.nameKey) : null;
+        if (near) {
+            state.pending = { type: 'confirm', what: 'loose-cust', options: [], custId: near.id, action: intent };
+            const word = intent.intent === 'credit' ? 'udhaar' : 'jama';
+            reply('🤔 "' + intent.name + '" ka khata nahi mila. ' + near.name + ' ka ' + rupees(intent.amount) + ' ' + word + ' likhna hai?\n*haan* = ' + near.name + ' ke khate mein' +
                 (intent.intent === 'credit' ? '\n*naya* = "' + intent.name + '" ka naya khata' : '') + '\n*nahi* = kuch nahi\n(Abhi kuch nahi likha.)', { kind: 'confirm-ask' });
             return out;
         }
@@ -6886,6 +6915,31 @@ function factory() {
         const AI_NOT_KHATA = ['balance', 'summary', 'remind', 'remind_all', 'help', 'chitchat', 'set_phone', 'add_customer', 'week', 'supplier', 'wholesale'];
         const aiKhata = !aiRead || AI_NOT_KHATA.indexOf(aiRead) < 0;
         if (!state.pending) {
+            // "Sarthak ka order batao" / "सार्थक सीट का order बताओ": that customer's order, never a stock order to a wholesaler
+            const oq = /^\s*(.+?)\s+(?:ka|ki|ke|kaa)\s+(?:order|ordar|odar|aadar|ardar)\s*(?:kya\s+hai|kya\s+he|kya|bata+o|batayo|bata|bataiye|bata\s+do|dikhao|dikha|dikha\s+do|dikhaiye|bhejo|bhej\s+do)?\s*[?.!।]*\s*$/i.exec(String(text));
+            if (oq) {
+                const nt = tokenize(oq[1]), nk = nameKey(nt.norm);
+                const found = nk ? findCustomers(state, nk).filter((c) => !c.removed) : [];
+                const c = found.length === 1 ? found[0] : !found.length ? soundsLike(state, nk) : null;
+                if (c) {
+                    const out = [];
+                    const mine = orders(state).filter((o) => o.custId === c.id);
+                    const open = mine.filter((o) => o.status === 'ask' || o.status === 'owner');
+                    const show = open.length ? open : mine.slice(-1);
+                    if (!show.length)
+                        emit(state, out, 'owner', c.name + ' ka abhi koi order nahi hai.');
+                    else
+                        for (const o of show)
+                            emit(state, out, 'owner', '🛒 ' + c.name + ' ka order (' + fmtDate(o.date) + ', ' + (o.status === 'ask' ? 'grahak se udhaar / cash pooch rahe hain' : o.status === 'owner' ? 'aapke ok ka intezaar' : o.status === 'done' ? 'pakka ho gaya' : 'mana kiya') + '):\n' + orderText(o, true) +
+                                (o.status === 'owner' ? '\nPakka karne ke liye *ok*, mana karne ke liye *nahi*.' : ''), { kind: 'order-show', orderId: o.id });
+                    return { intent: { intent: 'order_show', name: c.name }, messages: out };
+                }
+                if (found.length > 1) {
+                    const out = [];
+                    emit(state, out, 'owner', '"' + prettyName(nt.display) + '" naam ke ' + found.length + ' khate hain: ' + found.map((x) => x.name).join(', ') + '. Poora naam boliye.');
+                    return { intent: { intent: 'order_show' }, messages: out };
+                }
+            }
             // "Ramesh ko supplier banao 98xxxxxxxx, wo doodh aur bread deta hai": any name, no trade word needed
             const ms = aiAllows('wholesale', 'supplier', 'add_customer', 'set_phone', 'unknown') && makeSupplierIntent(state, text);
             if (ms) {
@@ -7659,6 +7713,26 @@ function factory() {
     // the same item in other words, so the rate memory still finds it: English, Marathi and spellings a model may choose
     const ITEM_SAME = { sugar: 'cheeni', sakhar: 'cheeni', chini: 'cheeni', rice: 'chaaval', tandul: 'chaaval', chawal: 'chaaval', flour: 'aata', 'wheat flour': 'aata', atta: 'aata', pith: 'aata',
         milk: 'doodh', dudh: 'doodh', oil: 'tel', 'cooking oil': 'tel', lentils: 'daal', lentil: 'daal', dal: 'daal', salt: 'namak', mith: 'namak', soap: 'sabun', 'mustard oil': 'sarson tel', maggi: 'Maggi', noodles: 'Maggi', biscuits: 'biscuit' };
+    // Common kirana words beyond GROCERY: a line with no quantity, no unit and no known rate must name one of these (or an
+    // item the shop already has a rate for). Voice notes turn filler into words ("Yah hasa", "Poora", "Jo mainne"), and
+    // those were added to orders as items.
+    const MORE_ITEMS = new Set(('sabudana sabudaana saboodana toor toovar tuvar arhar moong masoor urad chana rajma lobia matar chhole chole kabuli ' +
+        'sooji suji rava dalia daliya oats cornflakes muesli namkeen bhujia mixture papad achar achaar jam ketchup sauce honey shahad ' +
+        'gud jaggery mishri elaichi laung dalchini kalimirch ajwain methi rai sarson saunf hing imli kismis kaju badam pista akhrot ' +
+        'vermicelli sevai seviyan pasta noodles yippee bournvita horlicks complan boost amul nestle tata aashirvaad fortune saffola ' +
+        'dettol lifebuoy lux santoor dove pears vim harpic lizol phenyl tide ariel rin wheel ghadi comfort odonil hit goodnight mortein ' +
+        'agarbatti dhoop matchbox machis candle mombatti battery bulb pen pencil copy notebook razor blade gillette shaving brush ' +
+        'cream lotion powder talc vaseline boroplus parachute coconut nariyal hair kesh pad pads whisper stayfree diaper pampers ' +
+        'cigarette bidi gutka pan supari toffee candy chocolate dairymilk kitkat cake rusk toast khari bun cola sprite thums limca frooti maaza slice juice water pani soda ice icecream ' +
+        'aloo alu pyaz pyaaz kanda tamatar tomato adrak lahsun lehsun hari mirch nimbu lemon dhania pudina gobhi bhindi lauki baingan kheera ' +
+        'condom').split(' ').map(normWord));
+    /** A line worth putting on an order: a quantity, a unit, a known rate, or a word that is a real kirana item. */
+    function plausibleLine(state, l) {
+        if (l.qty != null || l.unit || l.from === 'memory' || l.from === 'variant' || l.price != null)
+            return true;
+        const known = new Set(Object.keys(prices(state)).flatMap((k) => k.split(' ')));
+        return l.key.split(' ').some((w) => GROCERY.has(w) || MORE_ITEMS.has(w) || known.has(w) || LOANWORDS.some(([, k]) => k === w) || /^(parleg|anti)$/.test(w) || !!ITEM_SAME[w]);
+    }
     function linesFromItems(state, items, text) {
         const stated = statedAmounts(text);
         const lines = [];
@@ -7763,8 +7837,18 @@ function factory() {
         if (ask.custId && ownerAsks(state).some((a) => a.custId === ask.custId))
             return;
         ownerAsks(state).push(ask);
-        if (ownerAsks(state).length === 1)
+        if (ownerAsks(state).length === 1) {
             emit(state, out, 'owner', askText(state, ask), { kind: 'owner-ask' });
+            return;
+        }
+        // behind another open question, a new order still reaches the owner at once with its bill: before, it waited in
+        // the queue silently and the owner only saw the customer's "Order mila" (krish, 25 Oct)
+        if (ask.type === 'order') {
+            const o = orders(state).find((x) => x.id === ask.orderId), c = o && getCust(state, o.custId);
+            if (o && c)
+                emit(state, out, 'owner', '🛒 Naya order aaya: ' + c.name + ', ' + (o.mode === 'udhaar' ? 'udhaar par' : o.mode === 'cash' ? 'cash par' : 'udhaar ya cash abhi pooch rahe hain') + '\n' + orderText(o, true) +
+                    '\n(Pehle ' + (ownerAsks(state).length - 1) + ' sawaal ka jawab dijiye, phir is order ko pakka karne ke liye poochunga.)', { kind: 'order-note', orderId: o.id });
+        }
     }
     /** An open question rides along under one later reply, once; never under every message the owner sends (KAN-88). */
     function askAlong(state, out) {
@@ -7932,6 +8016,9 @@ function factory() {
         else {
             emit(state, out, c.id, '🛒 Order mila.\n' + custBill(o) + rateNote(o) + '\nUdhaar mein likhein? *Haan* (khate mein) ya *Nahi* (cash denge)', { kind: 'order-ask', orderId: o.id });
             askOrderRate(state, o, out); // a new item: the owner is asked its rate now, the customer gets the full bill after
+            // the owner sees the order the moment it comes, not only after the customer answers haan / nahi
+            if (!missingRate(o))
+                emit(state, out, 'owner', '🛒 ' + c.name + ' ka order aaya (udhaar ya cash, grahak se pooch raha hoon):\n' + orderText(o, true), { kind: 'order-note', orderId: o.id });
         }
         return out;
     }
@@ -7979,7 +8066,7 @@ function factory() {
         if (head && head.type === 'order' && head.orderId === o.id)
             emit(state, out, 'owner', '➕ ' + c.name + ' ne order mein joda: ' + what + '\n' + askText(state, head), { kind: 'owner-ask' });
         else
-            emit(state, out, 'owner', '➕ ' + c.name + ' ne apne order mein joda: ' + what + '. Order ki baari aane par poochunga.');
+            emit(state, out, 'owner', '➕ ' + c.name + ' ne apne order mein joda: ' + what + '. Poora order ab:\n' + orderText(o, true) + '\nOrder ki baari aane par poochunga.');
         return out;
     }
     /**
@@ -8502,8 +8589,9 @@ function factory() {
             return optOut(state, c, out, nowMs);
         // an order waiting for "udhaar mein likhein?": a longer answer counts too ("khaate men likho, abhi paise nahi hai")
         const llm = ci.parser === 'llm';
-        if (llm && ci.lang)
-            c.lang = ci.lang; // replies go out in this language (the server translates them)
+        // replies go out in this language (the server translates them); never switched by "hi", "ok" or a number (KAN-161)
+        if (llm && ci.lang && (/[^\u0000-\u024F\s\d.,!?₹]/.test(String(text)) || tokenize(text).norm.filter((w) => /^[a-z]{2,}$/.test(w)).length >= 3))
+            c.lang = ci.lang;
         const asking = orders(state).filter((o) => o.custId === c.id && o.status === 'ask').pop();
         let co = ci.intent !== 'pay_claim' && ci.intent !== 'pay_now' ? customerOrder(state, text) : { lines: [] };
         if (llm && ci.intent === 'order' && ci.items && ci.items.length) {
@@ -8514,6 +8602,8 @@ function factory() {
         }
         else if (llm && ci.relevant === false)
             co = { lines: [] }; // the AI is sure this is not shop talk: no order out of "chahiye"
+        if (co.lines.length)
+            co = Object.assign({}, co, { lines: co.lines.filter((l) => plausibleLine(state, l)) }); // no "Yah hasa" or "Poora" as an item
         const llmReply = llm ? (ci.udhaar || ci.intent === 'confirm_yes' ? 'udhaar' : ci.intent === 'confirm_no' ? 'cash' : null) : null;
         // a balance question ("mera kitna udhaar hau") is answered as one, never taken as the udhaar answer; only a bare "haan"/"udhaar" still answers the ask
         const balanceQ = ci.intent === 'balance' || isBalanceQ(tokenize(text));
@@ -8641,10 +8731,9 @@ function factory() {
         // a real message for the shopkeeper: the customer hears that it was passed on (or the AI's one short question)
         if (bal > 0 && (c.reminderLevel > 0 || c.lastReminder) && ci.intent === 'promise')
             emit(state, out, c.id, 'Dhanyavaad 🙏 Kab tak de payenge? Jaise "Shukravar ko" ya "5 tareekh".');
+        // the model's own words never go to a customer under the shop's name: it invents shop hours and facts (KAN-160)
         else if (llm && ci.intent === 'order' && !co.lines.length)
-            emit(state, out, c.id, ci.ask || 'Kya chahiye? Saaman ka naam aur kitna likhiye, jaise "aata 5 kilo" 🙏');
-        else if (llm && ci.ask)
-            emit(state, out, c.id, ci.ask); // the AI's one short question, in the customer's words
+            emit(state, out, c.id, 'Kya chahiye? Saaman ka naam aur kitna likhiye, jaise "aata 5 kilo" 🙏');
         else
             emit(state, out, c.id, '🙏 Aapka message dukaan ko bhej diya. Dukaan jald jawab degi. - ' + state.shop.name, { kind: 'relayed' });
         relayToOwner(state, c, text, ci, out, nowMs);
