@@ -14,7 +14,7 @@ Built by **team CodingNinjas** (Nagpur) for **Hackyard Build 2026**:
 | Krish Singh | Team leader |
 | Harshit Tiwari | Team member |
 | Sarthak Seth | Team member |
-
+| Ameya Ingole | Team member |
 > **Honesty rule for this document:** everything below is either running today or clearly marked **(planned, not live)** or **(built, switched off)**.
 
 ---
