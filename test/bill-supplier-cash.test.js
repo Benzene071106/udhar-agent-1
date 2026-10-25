@@ -46,10 +46,7 @@ test('order: an itemised bill from the rate memory goes to the customer at once 
     assert.match(r.custText, /🧾 Bill:\n {2}• Cha+[wv]a+l 2 kilo × ₹60\/kilo = ₹120\n {2}• Doodh = ₹30\n {2}Kul: ₹150/, text + ': ' + r.custText);
     assert.match(r.custText, /Udhaar mein likhein\? \*Haan\*/, 'the udhaar / cash choice stays');
     assert.ok(!/daam dukaandaar/.test(r.custText), 'every rate known');
-    // the owner sees the order at once (a note, not a question); the ok / nahi comes once the customer picks udhaar or cash
-    assert.strictEqual(r.owner.length, 1, text);
-    assert.strictEqual(r.owner[0].kind, 'order-note', text);
-    assert.match(r.owner[0].text, /Sarthak seth ka order aaya[^]*Jod: ₹150/, text);
+    assert.strictEqual(r.owner.length, 0, 'all priced: the owner hears of it once the customer picks udhaar or cash');
     // haan: the owner gets the order, one ok writes it
     const h = say(s, c, 'haan, udhaar mein likh do');
     assert.match(h.ownerText, /Naya order: Sarthak seth, udhaar par[^]*Jod: ₹150/);
