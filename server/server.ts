@@ -37,6 +37,9 @@
 //   WA_MAX_SHOPS           default 10: registered shops that may have their own WhatsApp number linked at the same time
 //                          (one linked-device session each, keys in <WA_WEB_AUTH_DIR>-shops/<shopId>); the instance's own
 //                          shop keeps its session in WA_WEB_AUTH_DIR as before and is not counted
+//   VISION_URL, VISION_KEY, VISION_MODEL, VISION_TIMEOUT_MS   optional: read a photo of the paper khata (POST /api/khata-photo)
+//                          with any OpenAI-compatible vision endpoint, e.g. Gemma 4 31B; see server/vision.ts
+//   PHOTO_LIMIT_PER_MIN    default 6: khata photos per minute per visitor IP
 //   UDHAAR_ENV_FILE        optional KEY=value file read once at startup (default /home/node/udhaar.env).
 //                          Agent37 cannot pass env vars to an instance, so keys go in this file instead.
 //                          A variable already set in the real environment wins over the file.
@@ -49,6 +52,8 @@ import C = require('../core/agent-core');
 import { createWhatsapp } from './whatsapp';
 import { createWebTransport } from './wa-web';
 import { createBrain } from './brain';
+import { createVision, IMAGE_TYPES, MAX_IMAGE_BYTES } from './vision';
+import { reviewPhoto } from '../core/khata-photo';
 import { createAiTest } from './ai-test';
 import { createFileStore, openStore } from './store';
 import { createAuth, createFileAuthStore, openAuthStore, normPhone } from './auth';
@@ -106,6 +111,7 @@ export interface Tenant {
 // compiled to dist-server/server/, two levels below the repo root
 const ROOT = path.join(__dirname, '..', '..');
 const MAX_BODY = 16 * 1024;
+const PHOTO_BODY = Math.ceil(MAX_IMAGE_BYTES * 4 / 3) + 4096; // one base64 photo of up to 8 MB in a JSON body
 
 function localToday() {
   const d = new Date();
@@ -160,6 +166,7 @@ function createServer(opts?: ServerOpts | null): UdhaarServer {
 
   // The model chain (LLM_BASE_URL first if set, then the Agent37 router, then the rules): see server/llm.js and server/brain.js.
   const brain = createBrain({ env, fetch: fetchImpl, getState: () => state });
+  const vision = createVision({ env, fetch: fetchImpl }); // reads photos of the paper khata (VISION_URL); see server/vision.ts
   const llm = brain.llm;
   const engine = {
     llm: llm.enabled, model: llm.describe(),
@@ -243,7 +250,8 @@ function createServer(opts?: ServerOpts | null): UdhaarServer {
   // A small per-visitor rate limit for the routes that change the khata or spend AI calls. The page itself stays open
   // (it is a public demo); this only stops one visitor from hammering the shop. Local calls (no proxy) are not limited.
   const limits: Record<string, number[]> = { '/api/act': [+env.ACT_LIMIT_PER_MIN! || 30, 60e3], '/api/ai-test': [3, 60e3], '/api/auth/login': [10, 60e3], '/api/auth/setup': [5, 60e3],
-    '/api/auth/register': [+env.REGISTER_LIMIT_PER_HOUR! || 5, 3600e3], '/api/wa/connect': [10, 60e3] };
+    '/api/auth/register': [+env.REGISTER_LIMIT_PER_HOUR! || 5, 3600e3], '/api/wa/connect': [10, 60e3],
+    '/api/khata-photo': [+env.PHOTO_LIMIT_PER_MIN! || 6, 60e3] };
   const hits = new Map<string, number[]>();
   const local = (req: http.IncomingMessage) => !req.headers['x-forwarded-for'] && /^(::1|127\.|::ffff:127\.)/.test(req.socket.remoteAddress || '');
   const sameKey = (a: unknown, b: unknown) => { const x = Buffer.from(String(a || '')), y = Buffer.from(String(b)); return x.length === y.length && (require('crypto') as typeof import('crypto')).timingSafeEqual(x, y); };
@@ -500,7 +508,7 @@ function createServer(opts?: ServerOpts | null): UdhaarServer {
         return res.end();
       }
       if (req.method === 'GET' && url.pathname === '/favicon.ico') { res.writeHead(204); return res.end(); }
-      if (req.method === 'GET' && url.pathname === '/healthz') return send(res, 200, { ok: true, shop: shopId, llm: engine.llm, scheduler: env.REAL_CLOCK === '1', llmCalls: engine.llmCalls, llmFallbacks: engine.llmFallbacks, ai: llm.health(),
+      if (req.method === 'GET' && url.pathname === '/healthz') return send(res, 200, { ok: true, shop: shopId, llm: engine.llm, scheduler: env.REAL_CLOCK === '1', llmCalls: engine.llmCalls, llmFallbacks: engine.llmFallbacks, ai: llm.health(), vision: vision.health(),
         owner: { store: authStore.kind, account: auth.hasOwner(), taxIdEncrypted: auth.encryptionOn(), todo: ownerTodo() },
         registry: registry.kind,
         storage: { kind: store.kind, dualWriteJson: !!store.dualWrite, fallback: store.fallback || null, lastError: store.lastError || null },
@@ -525,6 +533,27 @@ function createServer(opts?: ServerOpts | null): UdhaarServer {
       if (req.method === 'GET' && url.pathname === '/join') {
         const html = wa.joinPage(state);
         return html ? send(res, 200, html, 'text/html; charset=utf-8') : send(res, 404, { error: 'not found' });
+      }
+      // a photo of the paper khata: read by the vision model, checked against the shop's customers and shown to the owner.
+      // Nothing is written here: the owner adds the blocks he agrees with from the dashboard, through the normal owner
+      // path, so the usual checks run and each customer still gets Haan / Galat (server/vision.ts, core/khata-photo.ts).
+      if (url.pathname === '/api/khata-photo') {
+        if (req.method === 'GET') return send(res, 200, { enabled: vision.enabled, model: vision.model });
+        if (req.method !== 'POST') return send(res, 404, { error: 'not found' });
+        const ten = await tenantOf(req);
+        const st = ten ? ten.t.state : !live || isOwner(req) ? state : null;
+        if (!st) return send(res, 403, { error: 'locked', message: 'Copy ki photo sirf dukaan ke maalik bhej sakte hain: pehle login kijiye.' });
+        if (!vision.enabled) return send(res, 503, { error: 'Photo reading is not set up on this shop yet (VISION_URL).' });
+        if (!/application\/json/.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'send JSON' });
+        if (+req.headers['content-length']! > PHOTO_BODY) { res.setHeader('connection', 'close'); return send(res, 413, { error: 'photo larger than 8 MB' }); }
+        let body;
+        try { body = JSON.parse(await readBody(req, PHOTO_BODY) || '{}'); } catch (e: any) { return send(res, e.code === 413 ? 413 : 400, { error: e.code === 413 ? 'photo larger than 8 MB' : 'bad JSON' }); }
+        const m = /^data:(image\/[a-z]+);base64,([A-Za-z0-9+/=\s]+)$/.exec(String((body && body.image) || ''));
+        if (!m || !IMAGE_TYPES.includes(m[1])) return send(res, 400, { error: 'send the photo as a JPEG, PNG or WebP data URL in "image"' });
+        try {
+          const read = await vision.readPage(Buffer.from(m[2], 'base64'), m[1]);
+          return send(res, 200, Object.assign(reviewPhoto(st, read), { model: read.model, ms: read.ms }));
+        } catch (e: any) { return send(res, 502, { error: 'Could not read the photo: ' + e.message }); }
       }
       // a self-registered shop's owner: everything below works on that shop only, never on this instance's shop
       if (url.pathname.startsWith('/api/')) {

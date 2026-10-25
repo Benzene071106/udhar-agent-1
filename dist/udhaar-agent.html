@@ -590,6 +590,13 @@ try { var t = localStorage.getItem('udhaar-theme'); if (t !== 'light' && t !== '
       <p class="note">Answer these on WhatsApp: reply ✅ (correct) or ❌ (wrong) to the agent's message on the shop number.</p>
     </div>
 
+    <div class="card" id="photoCard" hidden>
+      <div class="card-head"><h2>Read a photo of your khata copy</h2><span class="sub" id="photoSub">One page per photo. Send it as a file, not a compressed photo.</span></div>
+      <div class="catrow"><input type="file" id="photoFile" accept="image/jpeg,image/png,image/webp" aria-label="Khata page photo"><button class="btn dark" type="button" id="photoRead">Read page</button></div>
+      <div id="photoOut"></div>
+      <p class="note">The AI only reads the page. Nothing is written until you tick a row and press Add; each customer then gets Haan / Galat on WhatsApp.</p>
+    </div>
+
     <div class="kpis">
       <div class="kpi"><div class="kh"><span class="ico"><svg class="i"><use href="#i-cal"/></svg></span><div class="kt"><b class="kname">Collected this week</b><small>Last 7 days</small></div></div><b id="kWeek">₹0</b><span id="kWeekSub"></span></div>
       <a class="kpi tap" href="#supplier"><div class="kh"><span class="ico"><svg class="i"><use href="#i-truck"/></svg></span><div class="kt"><b class="kname">You owe suppliers</b><small>To pay</small></div></div><b id="kSup">₹0</b><span id="kSupSub"></span></a>
@@ -10153,6 +10160,54 @@ self.UdhaarCore = module.exports;
   matchMedia('(prefers-color-scheme: light)').addEventListener('change', (e) => {
     let saved = null; try { saved = localStorage.getItem('udhaar-theme'); } catch (x) {}
     if (!saved) setTheme(e.matches ? 'light' : 'dark');
+  });
+
+  // ---------- khata photo (POST api/khata-photo: the vision model reads a page; the owner adds what he agrees with) ----------
+  let photo = null;
+  const PHOTO_TAG = { open: ['clear', 'Still owed'], paid: ['grey', 'Paid (crossed out)'], check: ['late', 'Check'] };
+  function renderPhoto() {
+    const out = $('photoOut');
+    if (!photo) { out.innerHTML = ''; return; }
+    out.innerHTML = '<p class="note">' + esc((photo.pageDate ? 'Page date ' + photo.pageDate + ' · ' : '') + photo.blocks.length + ' blocks: ' + photo.open + ' still owed (' + rs(photo.openTotal) + '), ' + photo.paid + ' paid, ' + photo.check + ' to check · read by ' + photo.model + ' in ' + Math.round(photo.ms / 1000) + ' s') + '</p>' +
+      '<div class="twrap"><table><thead><tr><th>Add</th><th>Name</th><th>Items</th><th class="num">Total</th><th>Status</th></tr></thead><tbody>' +
+      photo.blocks.map((b, i) => '<tr><td>' + (b.ownerText ? '<input type="checkbox" data-pb="' + i + '"' + (b.status === 'open' ? ' checked' : '') + ' aria-label="Add ' + esc(b.name) + '">' : '') + '</td>' +
+        '<td>' + esc(b.match ? b.match.name : b.name || '?') + (b.written && b.written !== b.name ? ' <small>(' + esc(b.written) + ')</small>' : '') + '</td>' +
+        '<td>' + esc(b.items.map((x) => x.text + (x.amount != null ? ' ' + x.amount : '')).join(', ')) + '</td>' +
+        '<td class="num">' + (b.total != null ? rs(b.total) : '?') + '</td>' +
+        '<td><span class="tag ' + PHOTO_TAG[b.status][0] + '">' + PHOTO_TAG[b.status][1] + '</span>' + (b.reasons.length ? ' <small>' + esc(b.reasons.join('; ')) + '</small>' : '') + '</td></tr>').join('') +
+      '</tbody></table></div><div class="catrow"><button class="btn dark" type="button" id="photoAdd">Add ticked rows to the khata</button></div>';
+  }
+  if (REMOTE) fetch('api/khata-photo', { credentials: 'same-origin' }).then((r) => r.json()).then((j) => { $('photoCard').hidden = !j.enabled; }).catch(() => {});
+  $('photoRead').addEventListener('click', async () => {
+    const f = $('photoFile').files[0];
+    if (!f) return toast('Choose a photo of one khata page first.');
+    if (f.size > 8 * 1024 * 1024) return toast('The photo is larger than 8 MB.');
+    const image = await new Promise((ok, bad) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = bad; r.readAsDataURL(f); });
+    $('photoRead').disabled = true; $('photoSub').textContent = 'Reading the page… a big model can take a minute or two.';
+    try {
+      const r = await fetch('api/khata-photo', { method: 'POST', credentials: 'same-origin', headers: Object.assign({ 'content-type': 'application/json' }, ownerHeaders()), body: JSON.stringify({ image }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.message || j.error || 'HTTP ' + r.status);
+      photo = j; renderPhoto();
+      $('photoSub').textContent = 'Tick the rows that are right, then add them.';
+    } catch (e) { toast('Could not read the photo: ' + e.message); $('photoSub').textContent = 'One page per photo. Send it as a file, not a compressed photo.'; }
+    finally { $('photoRead').disabled = false; }
+  });
+  $('photoOut').addEventListener('click', async (e) => {
+    if (!e.target.closest('#photoAdd') || !photo) return;
+    const picked = [...document.querySelectorAll('#photoOut input[data-pb]:checked')].map((x) => photo.blocks[+x.dataset.pb]);
+    if (!picked.length) return toast('Tick at least one row.');
+    let added = 0;
+    for (const b of picked) {
+      const res = await safeAct('owner', { text: b.ownerText });
+      if (res === undefined) break;
+      added++;
+      const reply = ((res && res.messages) || []).filter((m) => m.to === 'owner').map((m) => m.text).join(' ');
+      if (reply) toast(b.name + ': ' + reply.slice(0, 160));
+    }
+    render();
+    toast(added + ' of ' + picked.length + ' rows sent to the khata. Answer any question the agent asked on WhatsApp.');
+    photo = null; renderPhoto(); $('photoFile').value = '';
   });
 
   // ---------- day controls ----------

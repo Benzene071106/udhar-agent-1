@@ -106,7 +106,7 @@ footer { color: var(--text-3); font-size: 12.5px; margin-top: 26px; }
     <li>Hand-checked cases on the AI and AI-generated cases: <b>Agent37 model + rules</b>, on the server, live</li>
     <li>Shop: <b>fresh demo shop per case</b></li>
     <li>Cases: <b id="nCases">…</b> in <b id="nCats">…</b> groups</li>
-    <li>Core build: <b>842e371</b></li>
+    <li>Core build: <b>d432e89</b></li>
   </ul>
 
   <section class="kpis" aria-label="Totals">
@@ -7284,7 +7284,7 @@ self.UdhaarCore = module.exports;
   $('onlyFails').addEventListener('change', drawStream);
   $('dl').addEventListener('click', () => {
     const pass = results.filter((r) => r.pass).length;
-    const blob = new Blob([JSON.stringify({ build: '842e371', path: 'rules parser, no AI model', pass, total: results.length, byCategory: by, results }, null, 1)], { type: 'application/json' });
+    const blob = new Blob([JSON.stringify({ build: 'd432e89', path: 'rules parser, no AI model', pass, total: results.length, byCategory: by, results }, null, 1)], { type: 'application/json' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'udhaar-test-run.json'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   });
   drawCats();
@@ -7315,7 +7315,7 @@ self.UdhaarCore = module.exports;
     }
     if (buf.trim()) onLine(JSON.parse(buf));
   }
-  const save = (obj, name) => { const blob = new Blob([JSON.stringify(Object.assign({ build: '842e371' }, obj), null, 1)], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); };
+  const save = (obj, name) => { const blob = new Blob([JSON.stringify(Object.assign({ build: 'd432e89' }, obj), null, 1)], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); };
 
   // hand-checked cases on the AI
   function fxRow(r) {
