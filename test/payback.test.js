@@ -162,6 +162,8 @@ test('WhatsApp: "200 ka QR bhejo" gets the QR image for ₹200, a tap-to-pay lin
     assert.match(m, /Aapka baaki: ₹500/);
     assert.match(m, /₹200 ka QR\. Baaki ₹300 baad mein\./);
     assert.match(m, /₹200 ka UPI QR neeche/);
+    assert.match(m, /Poora ₹500 dena ho toh likhiye: \*QR bhejo\*/);
+    assert.match(m, /Cash dena ho toh/);
     assert.match(m, new RegExp(PUBLIC.replace(/\./g, '\\.') + '/pay/' + w.c.id + '\\.[0-9a-f]{16}\\?amt=200'));
     const img = w.images(CUST);
     assert.equal(img.length, 1);
@@ -174,6 +176,8 @@ test('WhatsApp: "200 ka QR bhejo" gets the QR image for ₹200, a tap-to-pay lin
     w.clear();
     await w.say(CUST, 'QR bhejo');
     assert.match(w.to(CUST).join('\n'), /Poore ₹500 ka UPI QR/);
+    assert.match(w.to(CUST).join('\n'), /thoda dena ho toh likhiye jaise \*250 ka QR bhejo\*/);
+    assert.match(w.to(CUST).join('\n'), /Cash dena ho toh/);
     assert.ok(sameQr(w.images(CUST)[0].image, C.upiLink(st, w.c, 500)));
 
     // more than the baaki: the QR is for the baaki; paying extra as advance is a choice made on the page

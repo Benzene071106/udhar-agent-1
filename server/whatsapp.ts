@@ -173,6 +173,10 @@ function createWhatsapp(o: WhatsappOpts) {
     if (m.kind === 'pay-offer' && m.amount! > 0 && C.shopUpi(state)) {
       const u = payUrl(state, m.to);
       if (u) t += '\nPhone par hi pay karna ho, yeh link dabaiye: ' + u + '?amt=' + qrAmount(m);
+      // full or part, never full only: say how to pay less, and that cash is just as good
+      const partial = m.payAmount! > 0 && m.payAmount! < m.amount!;
+      t += partial ? '\nPoora ' + C.rupees(m.amount!) + ' dena ho toh likhiye: *QR bhejo*.' : '\nPoora nahi, thoda dena ho toh likhiye jaise *' + (m.amount! > 1 ? Math.max(1, Math.floor(m.amount! / 2)) : 1) + ' ka QR bhejo*, ya link kholkar "Thoda" chuniye.';
+      t += '\nCash dena ho toh dukaan par de dijiye aur likhiye "cash de diya". Dono barabar hain.';
     }
     return t;
   }
